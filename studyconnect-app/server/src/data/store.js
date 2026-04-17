@@ -1,7 +1,14 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createId, createJoinCode } from "../utils/id.js";
 import { nowIso, withinLastDays } from "../utils/time.js";
 
-const CATEGORIES = new Set(["doubt", "solution", "resource", "announcement", "explanation"]);
+const CATEGORIES = new Set(["doubt", "solution", "resource", "announcement", "explanation", "general"]);
+const currentFile = fileURLToPath(import.meta.url);
+const currentDir = path.dirname(currentFile);
+const dataDir = path.resolve(currentDir, "../../data");
+const storeFile = path.join(dataDir, "runtime-store.json");
 
 function normalizeCategory(category) {
   if (category === "explanation") return "solution";
@@ -10,13 +17,70 @@ function normalizeCategory(category) {
 
 class InMemoryStore {
   constructor() {
-    this.users = [];
-    this.groups = [];
-    this.memberships = [];
-    this.topics = [];
-    this.messages = [];
-    this.resources = [];
-    this.events = [];
+    const state = this.loadState();
+    this.users = state.users;
+    this.groups = state.groups;
+    this.memberships = state.memberships;
+    this.topics = state.topics;
+    this.messages = state.messages;
+    this.resources = state.resources;
+    this.events = state.events;
+  }
+
+  loadState() {
+    fs.mkdirSync(dataDir, { recursive: true });
+    if (!fs.existsSync(storeFile)) {
+      return this.createEmptyState();
+    }
+
+    try {
+      const raw = fs.readFileSync(storeFile, "utf8");
+      const parsed = JSON.parse(raw);
+      return {
+        users: Array.isArray(parsed.users) ? parsed.users : [],
+        groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+        memberships: Array.isArray(parsed.memberships) ? parsed.memberships : [],
+        topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+        resources: Array.isArray(parsed.resources) ? parsed.resources : [],
+        events: Array.isArray(parsed.events) ? parsed.events : []
+      };
+    } catch (error) {
+      console.warn(`Failed to load local store (${error.message}). Starting fresh.`);
+      return this.createEmptyState();
+    }
+  }
+
+  createEmptyState() {
+    return {
+      users: [],
+      groups: [],
+      memberships: [],
+      topics: [],
+      messages: [],
+      resources: [],
+      events: []
+    };
+  }
+
+  persistState() {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(
+      storeFile,
+      JSON.stringify(
+        {
+          users: this.users,
+          groups: this.groups,
+          memberships: this.memberships,
+          topics: this.topics,
+          messages: this.messages,
+          resources: this.resources,
+          events: this.events
+        },
+        null,
+        2
+      )
+    );
   }
 
   sanitizeUser(user) {
@@ -75,6 +139,7 @@ class InMemoryStore {
       updatedAt: timestamp
     };
     this.users.push(user);
+    this.persistState();
     return this.sanitizeUser(user);
   }
 
@@ -110,6 +175,7 @@ class InMemoryStore {
     }
 
     user.updatedAt = nowIso();
+    this.persistState();
     return this.sanitizeUser(user);
   }
 
@@ -118,6 +184,7 @@ class InMemoryStore {
     if (!user) return null;
     user.passwordHash = passwordHash;
     user.updatedAt = nowIso();
+    this.persistState();
     return this.sanitizeUser(user);
   }
 
@@ -153,6 +220,7 @@ class InMemoryStore {
       });
     }
 
+    this.persistState();
     return group;
   }
 
@@ -214,6 +282,7 @@ class InMemoryStore {
         role: "member",
         joinedAt: nowIso()
       });
+      this.persistState();
     }
 
     return { group };
@@ -233,6 +302,7 @@ class InMemoryStore {
     if (this.memberships.length === before) {
       return { error: "You are not a member of this group." };
     }
+    this.persistState();
     return { ok: true };
   }
 
@@ -243,6 +313,7 @@ class InMemoryStore {
     this.messages = this.messages.filter((message) => message.groupId !== groupId);
     this.resources = this.resources.filter((resource) => resource.groupId !== groupId);
     this.events = this.events.filter((event) => event.groupId !== groupId);
+    this.persistState();
     return { ok: true };
   }
 
@@ -255,6 +326,7 @@ class InMemoryStore {
       createdAt: nowIso()
     };
     this.topics.push(topic);
+    this.persistState();
     return topic;
   }
 
@@ -304,6 +376,7 @@ class InMemoryStore {
       }
     }
 
+    this.persistState();
     return message;
   }
 
@@ -318,12 +391,13 @@ class InMemoryStore {
     }
     if (typeof category === "string" && category.trim()) {
       const normalizedCategory = normalizeCategory(category.trim());
-      if (!["doubt", "solution", "resource", "announcement"].includes(normalizedCategory)) {
+      if (!["doubt", "solution", "resource", "announcement", "general"].includes(normalizedCategory)) {
         return { error: "Invalid message category." };
       }
       message.category = normalizedCategory;
     }
     message.updatedAt = nowIso();
+    this.persistState();
     return message;
   }
 
@@ -350,6 +424,7 @@ class InMemoryStore {
       }
     }
 
+    this.persistState();
     return { ok: true };
   }
 
@@ -361,6 +436,7 @@ class InMemoryStore {
 
     message.pinned = Boolean(pinned);
     message.updatedAt = nowIso();
+    this.persistState();
     return message;
   }
 
@@ -388,6 +464,7 @@ class InMemoryStore {
 
     solution.pinned = true;
     solution.updatedAt = nowIso();
+    this.persistState();
     return doubt;
   }
 
@@ -434,6 +511,7 @@ class InMemoryStore {
       updatedAt: nowIso()
     };
     this.resources.push(resource);
+    this.persistState();
     return resource;
   }
 
@@ -474,6 +552,7 @@ class InMemoryStore {
     }
 
     resource.updatedAt = nowIso();
+    this.persistState();
     return resource;
   }
 
@@ -483,6 +562,7 @@ class InMemoryStore {
       return { error: "Resource not found." };
     }
     this.resources = this.resources.filter((item) => item._id !== resourceId);
+    this.persistState();
     return { ok: true };
   }
 
@@ -498,6 +578,7 @@ class InMemoryStore {
       updatedAt: nowIso()
     };
     this.events.push(event);
+    this.persistState();
     return event;
   }
 
@@ -517,6 +598,7 @@ class InMemoryStore {
       event.dueAt = new Date(payload.dueAt).toISOString();
     }
     event.updatedAt = nowIso();
+    this.persistState();
     return event;
   }
 
@@ -526,6 +608,7 @@ class InMemoryStore {
       return { error: "Event not found." };
     }
     this.events = this.events.filter((item) => item._id !== eventId);
+    this.persistState();
     return { ok: true };
   }
 
@@ -541,7 +624,26 @@ class InMemoryStore {
     );
     if (!membership) return { error: "Member not found." };
     membership.role = role;
+    this.persistState();
     return membership;
+  }
+
+  async kickMember({ groupId, targetUserId }) {
+    const group = this.getGroup(groupId);
+    if (!group) return { error: "Group not found." };
+    if (group.createdBy === targetUserId) {
+      return { error: "Cannot kick the group creator." };
+    }
+
+    const before = this.memberships.length;
+    this.memberships = this.memberships.filter(
+      (membership) => !(membership.groupId === groupId && membership.userId === targetUserId)
+    );
+    if (this.memberships.length === before) {
+      return { error: "Member not found in this group." };
+    }
+    this.persistState();
+    return { ok: true };
   }
 
   async startCall({ groupId, startedBy, topicId, url }) {
@@ -556,6 +658,7 @@ class InMemoryStore {
       startedAt: nowIso()
     };
     group.updatedAt = nowIso();
+    this.persistState();
     return group.activeCall;
   }
 
@@ -565,6 +668,7 @@ class InMemoryStore {
     if (!group.activeCall) return { error: "No active call found." };
     group.activeCall = null;
     group.updatedAt = nowIso();
+    this.persistState();
     return { ok: true };
   }
 

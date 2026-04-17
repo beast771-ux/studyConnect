@@ -4,18 +4,18 @@ import crypto from "node:crypto";
 import express from "express";
 import multer from "multer";
 import bcrypt from "bcryptjs";
+import { avatarsDir } from "../config/paths.js";
 import { store } from "../data/store.js";
 import { authenticate, signToken } from "../middleware/auth.js";
 
 export const authRouter = express.Router();
 
-const avatarDir = path.resolve(process.cwd(), "server/uploads/avatars");
-fs.mkdirSync(avatarDir, { recursive: true });
+fs.mkdirSync(avatarsDir, { recursive: true });
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, callback) => {
-      callback(null, avatarDir);
+      callback(null, avatarsDir);
     },
     filename: (req, file, callback) => {
       const extension = path.extname(file.originalname).toLowerCase();

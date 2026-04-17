@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 function formatDate(iso) {
   return new Date(iso).toLocaleString(undefined, {
@@ -7,18 +7,6 @@ function formatDate(iso) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 function toDateTimeParts(iso) {
@@ -41,7 +29,8 @@ export default function RightPanel({
   onUpdateEvent,
   onDeleteEvent,
   onJoinEventCall,
-  onUpdateRole
+  onUpdateRole,
+  onKickMember
 }) {
   const [resourceMode, setResourceMode] = useState("link");
   const [resourceFile, setResourceFile] = useState(null);
@@ -52,8 +41,6 @@ export default function RightPanel({
     topicId: "",
     linkedDoubtId: ""
   });
-  const [editingResourceId, setEditingResourceId] = useState("");
-  const [editingResourceTitle, setEditingResourceTitle] = useState("");
 
   const [eventForm, setEventForm] = useState({
     title: "",
@@ -69,7 +56,26 @@ export default function RightPanel({
     time: ""
   });
 
-  if (!groupData) {
+  const group = groupData?.group || null;
+  const resources = Array.isArray(groupData?.resources) ? groupData.resources : [];
+  const events = Array.isArray(groupData?.events) ? groupData.events : [];
+  const members = Array.isArray(groupData?.members) ? groupData.members : [];
+  const topics = Array.isArray(groupData?.topics) ? groupData.topics : [];
+  const messages = Array.isArray(groupData?.messages) ? groupData.messages : [];
+  const weeklySummary = groupData?.weeklySummary || {
+    totalMessages: 0,
+    activeMembers: 0,
+    doubtsResolved: 0,
+    doubtsRaised: 0,
+    resourcesShared: 0,
+    upcomingDeadlines: 0,
+    overdueDeadlines: 0
+  };
+
+  const activeDoubts = messages.filter((message) => message.category === "doubt");
+  const visibleEvents = events.filter((event) => !hiddenEventIds.has(event._id));
+
+  if (!groupData || !group) {
     return (
       <aside className="panel right-panel empty-state">
         <h2>Insights</h2>
@@ -77,25 +83,6 @@ export default function RightPanel({
       </aside>
     );
   }
-
-  const { resources, events, weeklySummary, members, topics, group, messages } = groupData;
-  const activeDoubts = messages.filter((message) => message.category === "doubt");
-  const visibleEvents = events.filter((event) => !hiddenEventIds.has(event._id));
-
-  const resourcesByTopic = useMemo(() => {
-    const map = new Map();
-    for (const topic of topics) {
-      map.set(topic._id, []);
-    }
-    map.set("unassigned", []);
-
-    for (const resource of resources) {
-      const key = resource.topicId || "unassigned";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(resource);
-    }
-    return map;
-  }, [resources, topics]);
 
   async function submitResource(event) {
     event.preventDefault();
@@ -161,7 +148,9 @@ export default function RightPanel({
       <div className="panel-head">
         <div>
           <h2>Group Ops</h2>
-          <p className="muted">Join code: {group.joinCode}</p>
+          {currentUserRole === "admin" && (
+            <p className="muted">Join code: {group.joinCode}</p>
+          )}
         </div>
       </div>
 
@@ -204,13 +193,24 @@ export default function RightPanel({
                 <small className="muted">{member.user?.email}</small>
               </div>
               {currentUserRole === "admin" && member.userId !== currentUserId ? (
-                <select
-                  value={member.role}
-                  onChange={(event) => onUpdateRole(member.userId, event.target.value)}
-                >
-                  <option value="member">member</option>
-                  <option value="admin">admin</option>
-                </select>
+                <div className="member-admin-actions">
+                  <select
+                    value={member.role}
+                    onChange={(event) => onUpdateRole(member.userId, event.target.value)}
+                  >
+                    <option value="member">member</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  {group.createdBy !== member.userId && (
+                    <button
+                      type="button"
+                      className="inline-link kick-btn"
+                      onClick={() => onKickMember(member.userId)}
+                    >
+                      Kick
+                    </button>
+                  )}
+                </div>
               ) : (
                 <span className="pill">{member.role}</span>
               )}
@@ -221,6 +221,7 @@ export default function RightPanel({
 
       <section className="section-card">
         <h3>Resource Upload</h3>
+        <p className="muted section-note">Uploaded resources appear in the middle Resources Table.</p>
         <form className="mini-form" onSubmit={submitResource}>
           <div className="resource-mode-toggle">
             <button
@@ -326,94 +327,9 @@ export default function RightPanel({
       </section>
 
       <section className="section-card">
-        <h3>Resources Table (Topic-wise)</h3>
-        <div className="resource-table">
-          {[...resourcesByTopic.entries()].map(([topicId, list]) => {
-            const topicName =
-              topicId === "unassigned"
-                ? "Unassigned"
-                : topics.find((topic) => topic._id === topicId)?.title || "Topic";
-            return (
-              <div key={topicId} className="resource-topic-group">
-                <strong>{topicName}</strong>
-                {list.length === 0 && <small className="muted">No resources</small>}
-                {list.map((resource) => {
-                  const canManage =
-                    currentUserRole === "admin" || resource.uploadedBy === currentUserId;
-                  return (
-                    <div key={resource._id} className="resource-item">
-                      <a href={resource.url} target="_blank" rel="noreferrer">
-                        {resource.title}
-                      </a>
-                      <small>
-                        {resource.resourceKind === "file"
-                          ? `${resource.fileName || "file"} (${formatBytes(resource.fileSize)})`
-                          : resource.type}
-                        {resource.linkedDoubtId ? " | tagged to doubt" : ""}
-                      </small>
-                      {canManage && (
-                        <div className="resource-actions">
-                          <button
-                            type="button"
-                            className="inline-link"
-                            onClick={() => {
-                              setEditingResourceId(resource._id);
-                              setEditingResourceTitle(resource.title);
-                            }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-link"
-                            onClick={() => onDeleteResource(resource._id)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                      {editingResourceId === resource._id && (
-                        <div className="edit-row">
-                          <input
-                            value={editingResourceTitle}
-                            onChange={(event) => setEditingResourceTitle(event.target.value)}
-                          />
-                          <div className="resource-actions">
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={async () => {
-                                await onUpdateResource(resource._id, {
-                                  title: editingResourceTitle
-                                });
-                                setEditingResourceId("");
-                              }}
-                            >
-                              Save
-                            </button>
-                            <button
-                              type="button"
-                              className="inline-link"
-                              onClick={() => setEditingResourceId("")}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="section-card">
         <h3>Calendar & Deadlines</h3>
         {currentUserRole === "admin" && (
-          <form className="mini-form" onSubmit={submitEvent}>
+          <form className="mini-form event-form" onSubmit={submitEvent}>
             <input
               placeholder="Event title"
               value={eventForm.title}
@@ -427,7 +343,7 @@ export default function RightPanel({
                 setEventForm((prev) => ({ ...prev, description: event.target.value }))
               }
             />
-            <div className="double-input">
+            <div className="double-input event-form-row">
               <input
                 type="date"
                 value={eventForm.date}
@@ -441,7 +357,7 @@ export default function RightPanel({
                 required
               />
             </div>
-            <button type="submit" className="ghost-btn">
+            <button type="submit" className="ghost-btn event-form-submit">
               Add Event
             </button>
           </form>

@@ -101,14 +101,15 @@ export default function Sidebar({
           >
             Leave Group
           </button>
-          <button
-            type="button"
-            className="ghost-btn"
-            onClick={() => onDeleteGroup(selectedGroup._id)}
-            disabled={selectedGroup.role !== "admin"}
-          >
-            Delete Group
-          </button>
+          {selectedGroup.role === "admin" && (
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => onDeleteGroup(selectedGroup._id)}
+            >
+              Delete Group
+            </button>
+          )}
           {selectedGroup.isDefaultAdmin && (
             <small className="muted">Default admin cannot leave this group.</small>
           )}

@@ -13,6 +13,14 @@ function hiddenEventsStorageKey(userId, groupId) {
   return `studyconnect_hidden_events_${userId}_${groupId}`;
 }
 
+function isAuthBootstrapError(message) {
+  return [
+    "Authentication required.",
+    "Invalid token user.",
+    "Invalid or expired token."
+  ].includes(message);
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY) || "");
   const [user, setUser] = useState(null);
@@ -37,12 +45,13 @@ export default function App() {
   async function refreshGroups(preferredGroupId = "") {
     if (!token) return;
     const response = await api.listGroups(token);
-    setGroups(response.groups);
+    const nextGroups = Array.isArray(response.groups) ? response.groups : [];
+    setGroups(nextGroups);
 
     let nextGroupId = preferredGroupId;
-    const exists = response.groups.some((group) => group._id === nextGroupId);
+    const exists = nextGroups.some((group) => group._id === nextGroupId);
     if (!exists) {
-      nextGroupId = response.groups[0]?._id || "";
+      nextGroupId = nextGroups[0]?._id || "";
     }
     setSelectedGroupId(nextGroupId);
 
@@ -57,15 +66,33 @@ export default function App() {
   async function refreshGroup(groupId = selectedGroupId) {
     if (!token || !groupId) return;
     const data = await api.getGroup(token, groupId);
-    setGroupData(data);
+    setGroupData({
+      group: data?.group || null,
+      members: Array.isArray(data?.members) ? data.members : [],
+      topics: Array.isArray(data?.topics) ? data.topics : [],
+      messages: Array.isArray(data?.messages) ? data.messages : [],
+      resources: Array.isArray(data?.resources) ? data.resources : [],
+      events: Array.isArray(data?.events) ? data.events : [],
+      weeklySummary: data?.weeklySummary || {
+        totalMessages: 0,
+        activeMembers: 0,
+        doubtsRaised: 0,
+        doubtsResolved: 0,
+        resourcesShared: 0,
+        upcomingDeadlines: 0,
+        overdueDeadlines: 0
+      },
+      currentUserRole: data?.currentUserRole || "member"
+    });
     setSelectedTopicId((currentTopicId) => {
-      const exists = data.topics.some((topic) => topic._id === currentTopicId);
+      const topics = Array.isArray(data?.topics) ? data.topics : [];
+      const exists = topics.some((topic) => topic._id === currentTopicId);
       if (exists) return currentTopicId;
-      return data.topics[0]?._id || "";
+      return topics[0]?._id || "";
     });
   }
 
-  function clearSession() {
+  function clearSession(nextError = "") {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
     setUser(null);
@@ -75,7 +102,15 @@ export default function App() {
     setGroupData(null);
     setHiddenEventIds(new Set());
     setProfileOpen(false);
-    setError("");
+    setError(nextError);
+  }
+
+  function resetWorkspace() {
+    setGroups([]);
+    setSelectedGroupId("");
+    setSelectedTopicId("");
+    setGroupData(null);
+    setHiddenEventIds(new Set());
   }
 
   async function handleAuth(mode, payload) {
@@ -122,8 +157,12 @@ export default function App() {
         await refreshGroups();
       } catch (loadError) {
         if (!ignore) {
-          setError(loadError.message);
-          clearSession();
+          if (isAuthBootstrapError(loadError.message)) {
+            clearSession(loadError.message);
+          } else {
+            resetWorkspace();
+            setError(loadError.message);
+          }
         }
       } finally {
         if (!ignore) {
@@ -205,11 +244,11 @@ export default function App() {
     setAppLoading(true);
     setError("");
     try {
-      await action();
+      const result = await action();
       if (options.refreshGroups) {
-        await refreshGroups(options.preferredGroupId || selectedGroupId);
+        await refreshGroups(options.preferredGroupId || result?.preferredGroupId || selectedGroupId);
       } else if (options.refreshGroup) {
-        await refreshGroup(options.groupId || selectedGroupId);
+        await refreshGroup(options.groupId || result?.groupId || selectedGroupId);
       }
     } catch (actionError) {
       setError(actionError.message);
@@ -345,12 +384,14 @@ export default function App() {
             runAction(async () => {
               const result = await api.createGroup(token, payload);
               setSelectedGroupId(result.group._id);
+              return { preferredGroupId: result.group._id };
             }, { refreshGroups: true })
           }
           onJoinGroup={(payload) =>
             runAction(async () => {
               const result = await api.joinGroup(token, payload);
               setSelectedGroupId(result.group._id);
+              return { preferredGroupId: result.group._id };
             }, { refreshGroups: true })
           }
           onLeaveGroup={(groupId) =>
@@ -395,6 +436,16 @@ export default function App() {
           }
           onDeleteMessage={(messageId) =>
             runAction(() => api.deleteMessage(token, selectedGroupId, messageId), {
+              refreshGroup: true
+            })
+          }
+          onUpdateResource={(resourceId, payload) =>
+            runAction(() => api.updateResource(token, selectedGroupId, resourceId, payload), {
+              refreshGroup: true
+            })
+          }
+          onDeleteResource={(resourceId) =>
+            runAction(() => api.deleteResource(token, selectedGroupId, resourceId), {
               refreshGroup: true
             })
           }
@@ -447,6 +498,11 @@ export default function App() {
           onUpdateRole={(memberUserId, role) =>
             runAction(() => api.updateMemberRole(token, selectedGroupId, memberUserId, { role }), {
               refreshGroup: true
+            })
+          }
+          onKickMember={(memberUserId) =>
+            runAction(() => api.kickMember(token, selectedGroupId, memberUserId), {
+              refreshGroups: true
             })
           }
         />

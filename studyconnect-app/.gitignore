@@ -5,3 +5,4 @@ dist
 coverage
 npm-debug.log*
 server/uploads
+server/data/runtime-store.json

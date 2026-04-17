@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import express from "express";
 import multer from "multer";
+import { uploadsDir } from "../config/paths.js";
 import { store } from "../data/store.js";
 import { authenticate } from "../middleware/auth.js";
 import { emitGroupUpdate } from "../socket/index.js";
@@ -10,7 +11,6 @@ export const groupRouter = express.Router();
 
 groupRouter.use(authenticate);
 
-const uploadsDir = path.resolve(process.cwd(), "server/uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
 const upload = multer({
@@ -468,4 +468,17 @@ groupRouter.patch("/:groupId/members/:memberUserId/role", requireAdmin, async (r
     role
   });
   return res.json({ membership: updated });
+});
+
+groupRouter.delete("/:groupId/members/:memberUserId", requireAdmin, async (req, res) => {
+  const result = await store.kickMember({
+    groupId: req.params.groupId,
+    targetUserId: req.params.memberUserId
+  });
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  notify(req, req.params.groupId, "member-kicked", { userId: req.params.memberUserId });
+  return res.json({ ok: true });
 });

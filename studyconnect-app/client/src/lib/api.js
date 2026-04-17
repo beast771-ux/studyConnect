@@ -161,5 +161,11 @@ export const api = {
       token,
       body: payload
     });
+  },
+  kickMember(token, groupId, memberUserId) {
+    return request(`/groups/${groupId}/members/${memberUserId}`, {
+      method: "DELETE",
+      token
+    });
   }
 };

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function formatDate(iso) {
   return new Date(iso).toLocaleString(undefined, {
@@ -19,6 +19,12 @@ function formatBytes(bytes) {
     unit += 1;
   }
   return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function excerpt(text, maxLength = 90) {
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 export default function ChatPanel({
@@ -43,12 +49,17 @@ export default function ChatPanel({
   const [newTopic, setNewTopic] = useState("");
   const [category, setCategory] = useState("general");
   const [content, setContent] = useState("");
-  const [replyToDoubtId, setReplyToDoubtId] = useState("");
+  const [replyToMessageId, setReplyToMessageId] = useState("");
+  const [searchText, setSearchText] = useState("");
   const [pinBusyId, setPinBusyId] = useState("");
+  const [pendingScrollMessageId, setPendingScrollMessageId] = useState("");
+  const [highlightedMessageId, setHighlightedMessageId] = useState("");
   const [editingMessageId, setEditingMessageId] = useState("");
   const [editingContent, setEditingContent] = useState("");
   const [editingResourceId, setEditingResourceId] = useState("");
   const [editingResourceTitle, setEditingResourceTitle] = useState("");
+  const messageElementRefs = useRef(new Map());
+  const highlightTimeoutRef = useRef(null);
 
   const group = groupData?.group || null;
   const topics = Array.isArray(groupData?.topics) ? groupData.topics : [];
@@ -63,8 +74,6 @@ export default function ChatPanel({
     () => messages.filter((message) => message.topicId === activeTopicId),
     [messages, activeTopicId]
   );
-  const allDoubtsForTopic = topicMessages.filter((message) => message.category === "doubt");
-  const unresolvedDoubts = allDoubtsForTopic.filter((message) => !message.verifiedSolutionId);
   const pinnedMessages = topicMessages.filter((message) => message.pinned);
   const resourceRows = useMemo(
     () =>
@@ -77,6 +86,45 @@ export default function ChatPanel({
     () => new Map(topics.map((topic) => [topic._id, topic.title])),
     [topics]
   );
+  const messageLookup = useMemo(
+    () => new Map(messages.map((message) => [message._id, message])),
+    [messages]
+  );
+  const normalizedSearchText = searchText.trim().toLowerCase();
+  const filteredTopicMessages = useMemo(() => {
+    if (!normalizedSearchText) return topicMessages;
+
+    return topicMessages.filter((message) =>
+      [message.content, message.author?.name, message.category].some((value) =>
+        (value || "").toLowerCase().includes(normalizedSearchText)
+      )
+    );
+  }, [topicMessages, normalizedSearchText]);
+  const filteredResourceRows = useMemo(() => {
+    if (!normalizedSearchText) return resourceRows;
+
+    return resourceRows.filter((resource) => {
+      const linkedDoubt = resource.linkedDoubtId
+        ? messageLookup.get(resource.linkedDoubtId)
+        : null;
+      const topicName = resource.topicId
+        ? topicTitles.get(resource.topicId) || "Archived topic"
+        : "All topics";
+
+      return [
+        resource.title,
+        resource.url,
+        resource.type,
+        topicName,
+        linkedDoubt?.content
+      ].some((value) => (value || "").toLowerCase().includes(normalizedSearchText));
+    });
+  }, [resourceRows, normalizedSearchText, messageLookup, topicTitles]);
+  const replyTarget = replyToMessageId ? messageLookup.get(replyToMessageId) || null : null;
+  const visibleItemCount = isResourcesTopic
+    ? filteredResourceRows.length
+    : filteredTopicMessages.length;
+  const totalItemCount = isResourcesTopic ? resourceRows.length : topicMessages.length;
 
   const upcomingDeadlines = events
     .filter(
@@ -93,6 +141,82 @@ export default function ChatPanel({
     .sort((a, b) => new Date(b.dueAt) - new Date(a.dueAt))
     .slice(0, 2);
 
+  useEffect(() => {
+    setSearchText("");
+    setReplyToMessageId("");
+    setEditingMessageId("");
+    setEditingContent("");
+  }, [activeTopicId]);
+
+  useEffect(() => {
+    if (replyToMessageId && !messageLookup.has(replyToMessageId)) {
+      setReplyToMessageId("");
+    }
+  }, [replyToMessageId, messageLookup]);
+
+  useEffect(() => {
+    if (!pendingScrollMessageId) return;
+
+    const targetMessage = messageLookup.get(pendingScrollMessageId);
+    const targetElement = messageElementRefs.current.get(pendingScrollMessageId);
+    if (!targetMessage) {
+      setPendingScrollMessageId("");
+      return;
+    }
+    if (targetMessage.topicId !== activeTopicId || !targetElement) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedMessageId(pendingScrollMessageId);
+      if (highlightTimeoutRef.current) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+      highlightTimeoutRef.current = window.setTimeout(() => {
+        setHighlightedMessageId("");
+        highlightTimeoutRef.current = null;
+      }, 2200);
+      setPendingScrollMessageId("");
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [pendingScrollMessageId, messageLookup, activeTopicId, filteredTopicMessages]);
+
+  useEffect(
+    () => () => {
+      if (highlightTimeoutRef.current) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+    },
+    []
+  );
+
+  function setMessageElementRef(messageId, node) {
+    if (node) {
+      messageElementRefs.current.set(messageId, node);
+      return;
+    }
+    messageElementRefs.current.delete(messageId);
+  }
+
+  function jumpToMessage(messageId) {
+    const targetMessage = messageLookup.get(messageId);
+    if (!targetMessage) return;
+
+    setPendingScrollMessageId(messageId);
+
+    if (targetMessage.topicId !== activeTopicId) {
+      onSelectTopic(targetMessage.topicId);
+      return;
+    }
+
+    const targetIsVisible = filteredTopicMessages.some((message) => message._id === messageId);
+    if (!targetIsVisible && normalizedSearchText) {
+      setSearchText("");
+    }
+  }
+
   async function submitTopic(event) {
     event.preventDefault();
     if (!newTopic.trim()) return;
@@ -107,9 +231,10 @@ export default function ChatPanel({
       topicId: activeTopicId,
       category,
       content: content.trim(),
-      parentMessageId: replyToDoubtId || null
+      parentMessageId: replyToMessageId || null
     });
     setContent("");
+    setReplyToMessageId("");
   }
 
   async function togglePin(message) {
@@ -121,6 +246,10 @@ export default function ChatPanel({
   function startEditing(message) {
     setEditingMessageId(message._id);
     setEditingContent(message.content);
+  }
+
+  function startReply(message) {
+    setReplyToMessageId(message._id);
   }
 
   async function saveEdit(messageId) {
@@ -235,6 +364,29 @@ export default function ChatPanel({
         </div>
       )}
 
+      <section className="messages-toolbar">
+        <div className="messages-search">
+          <input
+            type="search"
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder={isResourcesTopic ? "Search resources" : "Search text in this topic"}
+          />
+          {searchText && (
+            <button
+              type="button"
+              className="inline-link"
+              onClick={() => setSearchText("")}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <span className="pill">
+          {visibleItemCount}/{totalItemCount} shown
+        </span>
+      </section>
+
       <section className="messages-list">
         {isResourcesTopic ? (
           <div className="resources-board">
@@ -247,12 +399,15 @@ export default function ChatPanel({
             </div>
 
             <div className="resources-board-list">
-              {resourceRows.map((resource) => {
+              {filteredResourceRows.map((resource) => {
                 const canManage =
                   currentUserRole === "admin" || resource.uploadedBy === currentUser?._id;
                 const topicName = resource.topicId
                   ? topicTitles.get(resource.topicId) || "Archived topic"
                   : "All topics";
+                const linkedDoubt = resource.linkedDoubtId
+                  ? messageLookup.get(resource.linkedDoubtId) || null
+                  : null;
 
                 return (
                   <article key={resource._id} className="resource-board-card">
@@ -266,9 +421,26 @@ export default function ChatPanel({
                       {resource.resourceKind === "file"
                         ? `${resource.fileName || "file"} (${formatBytes(resource.fileSize)})`
                         : resource.type}
-                      {resource.linkedDoubtId ? " | tagged to doubt" : ""}
                       {resource.createdAt ? ` | added ${formatDate(resource.createdAt)}` : ""}
                     </small>
+                    {linkedDoubt && (
+                      <button
+                        type="button"
+                        className="message-reference message-reference-link resource-reference"
+                        onClick={() => jumpToMessage(linkedDoubt._id)}
+                        title="Jump to tagged doubt"
+                      >
+                        <span>
+                          Tagged doubt from {linkedDoubt.author?.name || "Unknown"}
+                        </span>
+                        <p>{linkedDoubt.content}</p>
+                      </button>
+                    )}
+                    {resource.linkedDoubtId && !linkedDoubt && (
+                      <div className="message-reference missing">
+                        <span>Tagged doubt unavailable</span>
+                      </div>
+                    )}
                     {canManage && (
                       <div className="resource-actions">
                         <button
@@ -322,26 +494,33 @@ export default function ChatPanel({
                   </article>
                 );
               })}
-              {!resourceRows.length && (
-                <p className="muted">No resources uploaded yet. Use the right panel to upload.</p>
+              {!filteredResourceRows.length && (
+                <p className="muted">
+                  {resourceRows.length
+                    ? "No resources match your search."
+                    : "No resources uploaded yet. Use the right panel to upload."}
+                </p>
               )}
             </div>
           </div>
         ) : (
           <>
-            {topicMessages.map((message) => {
+            {filteredTopicMessages.map((message) => {
               const isOwnMessage = message.authorId === currentUser?._id;
-              const canEdit = currentUserRole === "admin" || message.authorId === currentUser?._id;
+              const canEdit = message.authorId === currentUser?._id;
+              const canManageMessage = currentUserRole === "admin" || isOwnMessage;
               const verifiedSolution = message.verifiedSolutionId
-                ? topicMessages.find((item) => item._id === message.verifiedSolutionId)
+                ? messageLookup.get(message.verifiedSolutionId) || null
+                : null;
+              const parentMessage = message.parentMessageId
+                ? messageLookup.get(message.parentMessageId) || null
                 : null;
 
               const parentDoubt =
                 message.category === "solution" && message.parentMessageId
-                  ? topicMessages.find(
-                      (item) =>
-                        item._id === message.parentMessageId && item.category === "doubt"
-                    ) || null
+                  ? parentMessage?.category === "doubt"
+                    ? parentMessage
+                    : null
                   : null;
               const canVerifyThisSolution =
                 parentDoubt &&
@@ -352,6 +531,7 @@ export default function ChatPanel({
                 <article
                   key={message._id}
                   className={`message-row ${isOwnMessage ? "own" : "incoming"}`}
+                  ref={(node) => setMessageElementRef(message._id, node)}
                 >
                   {!isOwnMessage && (
                     <div className="message-avatar" aria-hidden="true">
@@ -368,7 +548,9 @@ export default function ChatPanel({
                   )}
 
                   <div
-                    className={`message-card ${message.category} ${isOwnMessage ? "own" : "incoming"}`}
+                    className={`message-card ${message.category} ${isOwnMessage ? "own" : "incoming"} ${
+                      highlightedMessageId === message._id ? "jump-highlight" : ""
+                    }`}
                   >
                     <header>
                       <div className="meta">
@@ -377,7 +559,14 @@ export default function ChatPanel({
                         <small>{formatDate(message.createdAt)}</small>
                       </div>
                       <div className="message-actions">
-                        {currentUserRole === "admin" && (
+                        <button
+                          type="button"
+                          className="inline-link"
+                          onClick={() => startReply(message)}
+                        >
+                          {"Reply <-"}
+                        </button>
+                        {canManageMessage && (
                           <button
                             type="button"
                             className="inline-link"
@@ -388,25 +577,45 @@ export default function ChatPanel({
                           </button>
                         )}
                         {canEdit && (
-                          <>
-                            <button
-                              type="button"
-                              className="inline-link"
-                              onClick={() => startEditing(message)}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              className="inline-link"
-                              onClick={() => onDeleteMessage(message._id)}
-                            >
-                              Delete
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="inline-link"
+                            onClick={() => startEditing(message)}
+                          >
+                            Edit
+                          </button>
+                        )}
+                        {canManageMessage && (
+                          <button
+                            type="button"
+                            className="inline-link"
+                            onClick={() => onDeleteMessage(message._id)}
+                          >
+                            Delete
+                          </button>
                         )}
                       </div>
                     </header>
+
+                    {parentMessage && (
+                      <button
+                        type="button"
+                        className="message-reference message-reference-link"
+                        onClick={() => jumpToMessage(parentMessage._id)}
+                        title="Jump to original message"
+                      >
+                        <span>
+                          Replying to {parentMessage.author?.name || "Unknown"} |{" "}
+                          {parentMessage.category}
+                        </span>
+                        <p>{parentMessage.content}</p>
+                      </button>
+                    )}
+                    {message.parentMessageId && !parentMessage && (
+                      <div className="message-reference missing">
+                        <span>Original message unavailable</span>
+                      </div>
+                    )}
 
                     {editingMessageId === message._id ? (
                       <div className="edit-row">
@@ -436,12 +645,6 @@ export default function ChatPanel({
                       <p className="message-body">{message.content}</p>
                     )}
 
-                    {message.parentMessageId && (
-                      <small className="muted">
-                        Linked doubt #{message.parentMessageId.slice(0, 6)}
-                      </small>
-                    )}
-
                     {verifiedSolution && (
                       <div className="accepted-answer">
                         <span>Verified solution</span>
@@ -462,10 +665,13 @@ export default function ChatPanel({
                 </article>
               );
             })}
-            {!topicMessages.length && (
+            {!filteredTopicMessages.length && (
               <p className="muted">
-                No messages yet in {selectedTopic?.title || "this topic"}. Start with a doubt or
-                announcement.
+                {topicMessages.length
+                  ? "No messages match your search."
+                  : `No messages yet in ${
+                      selectedTopic?.title || "this topic"
+                    }. Start with a doubt or announcement.`}
               </p>
             )}
           </>
@@ -473,27 +679,32 @@ export default function ChatPanel({
       </section>
 
       {!isResourcesTopic && (
-        <form className="composer" onSubmit={submitMessage}>
-          <div className="composer-shell">
+        <div className="composer">
+          {replyTarget && (
+            <div className="composer-reply-preview">
+              <div>
+                <span>
+                  Replying to {replyTarget.author?.name || "Unknown"} | {replyTarget.category}
+                </span>
+                <p>{excerpt(replyTarget.content, 140)}</p>
+              </div>
+              <button
+                type="button"
+                className="inline-link"
+                onClick={() => setReplyToMessageId("")}
+              >
+                Cancel reply
+              </button>
+            </div>
+          )}
+
+          <form className="composer-shell" onSubmit={submitMessage}>
             <select value={category} onChange={(event) => setCategory(event.target.value)}>
               <option value="general">General</option>
               <option value="doubt">Doubt</option>
               <option value="solution">Solution</option>
               <option value="resource">Resource</option>
               <option value="announcement">Announcement</option>
-            </select>
-
-            <select
-              value={replyToDoubtId}
-              onChange={(event) => setReplyToDoubtId(event.target.value)}
-              disabled={category !== "solution" || !allDoubtsForTopic.length}
-            >
-              <option value="">No doubt mapping</option>
-              {allDoubtsForTopic.map((doubt) => (
-                <option key={doubt._id} value={doubt._id}>
-                  {doubt.content.slice(0, 45)}
-                </option>
-              ))}
             </select>
             <input
               type="text"
@@ -506,8 +717,8 @@ export default function ChatPanel({
             <button type="submit" className="primary-btn composer-send-btn">
               Send
             </button>
-          </div>
-        </form>
+          </form>
+        </div>
       )}
     </main>
   );

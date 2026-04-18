@@ -349,6 +349,18 @@ class InMemoryStore {
       return { error: "Topic does not belong to this group." };
     }
 
+    let normalizedParentMessageId = null;
+    if (parentMessageId) {
+      const parentMessage = this.getMessage(parentMessageId);
+      if (!parentMessage || parentMessage.groupId !== groupId) {
+        return { error: "Reply target not found in this group." };
+      }
+      if (parentMessage.topicId !== topicId) {
+        return { error: "Replies must stay inside the same topic." };
+      }
+      normalizedParentMessageId = parentMessageId;
+    }
+
     const message = {
       _id: createId(),
       groupId,
@@ -356,7 +368,7 @@ class InMemoryStore {
       authorId,
       category: normalizedCategory,
       content: content.trim(),
-      parentMessageId,
+      parentMessageId: normalizedParentMessageId,
       verifiedSolutionId: null,
       pinned: false,
       createdAt: nowIso(),

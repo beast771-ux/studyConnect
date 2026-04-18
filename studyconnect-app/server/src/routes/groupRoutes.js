@@ -179,9 +179,9 @@ groupRouter.patch("/:groupId/messages/:messageId", requireMember, async (req, re
   if (!message || message.groupId !== req.params.groupId) {
     return res.status(404).json({ error: "Message not found." });
   }
-  const canEdit = req.membership.role === "admin" || message.authorId === req.user._id;
+  const canEdit = message.authorId === req.user._id;
   if (!canEdit) {
-    return res.status(403).json({ error: "Only message author or admin can edit." });
+    return res.status(403).json({ error: "Only the message author can edit." });
   }
 
   const updated = await store.updateMessage({
@@ -220,19 +220,31 @@ groupRouter.delete("/:groupId/messages/:messageId", requireMember, async (req, r
   return res.json({ ok: true });
 });
 
-groupRouter.patch("/:groupId/messages/:messageId/pin", requireAdmin, async (req, res) => {
+groupRouter.patch("/:groupId/messages/:messageId/pin", requireMember, async (req, res) => {
+  const message = store.getMessage(req.params.messageId);
+  if (!message || message.groupId !== req.params.groupId) {
+    return res.status(404).json({ error: "Message not found." });
+  }
+
+  const canPin = req.membership.role === "admin" || message.authorId === req.user._id;
+  if (!canPin) {
+    return res
+      .status(403)
+      .json({ error: "Only message author or admin can pin or unpin." });
+  }
+
   const { pinned } = req.body;
-  const message = await store.setPinned({
+  const updated = await store.setPinned({
     groupId: req.params.groupId,
     messageId: req.params.messageId,
     pinned
   });
-  if (message.error) {
-    return res.status(404).json({ error: message.error });
+  if (updated.error) {
+    return res.status(404).json({ error: updated.error });
   }
 
-  notify(req, req.params.groupId, "message-pinned", { messageId: message._id, pinned });
-  return res.json({ message });
+  notify(req, req.params.groupId, "message-pinned", { messageId: updated._id, pinned });
+  return res.json({ message: updated });
 });
 
 groupRouter.patch("/:groupId/doubts/:doubtId/verify", requireMember, async (req, res) => {
